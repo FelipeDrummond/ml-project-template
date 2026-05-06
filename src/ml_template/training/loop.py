@@ -24,6 +24,11 @@ from ml_template.training.checkpoint import (
     prune_top_k,
     save_checkpoint,
 )
+from ml_template.training.scheduler import (
+    build_scheduler,
+    current_lr,
+    resolve_warmup_steps,
+)
 from ml_template.training.spot import (
     install_sigterm_handler,
     maybe_resolve_remote_resume,
@@ -68,26 +73,36 @@ def _train_one_epoch(
     accelerator: Accelerator,
     model: nn.Module,
     optim: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
     loss_fn: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     starting_step: int,
 ) -> int:
-    """Run one training epoch. Returns the new global_step counter."""
+    """Run one training epoch. Returns the new global_step counter.
+
+    `step` counts micro-batches. With grad_accum_steps > 1, the optimizer
+    steps once per N micro-batches; `accelerator.accumulate(model)` gates
+    the actual backward sync + optim/scheduler step on the boundary.
+    """
     model.train()
     step = starting_step
     for x, y in loader:
-        logits = model(x)
-        loss = loss_fn(logits, y)
-        assert_finite_loss(loss, step)
-        optim.zero_grad(set_to_none=True)
-        accelerator.backward(loss)
-        if cfg.trainer.grad_clip_max_norm is not None:
-            accelerator.clip_grad_norm_(
-                model.parameters(), cfg.trainer.grad_clip_max_norm
-            )
-        optim.step()
+        with accelerator.accumulate(model):
+            logits = model(x)
+            loss = loss_fn(logits, y)
+            assert_finite_loss(loss, step)
+            accelerator.backward(loss)
+            if accelerator.sync_gradients and cfg.trainer.grad_clip_max_norm is not None:
+                accelerator.clip_grad_norm_(
+                    model.parameters(), cfg.trainer.grad_clip_max_norm
+                )
+            optim.step()
+            if scheduler is not None:
+                scheduler.step()
+            optim.zero_grad(set_to_none=True)
         if step % cfg.trainer.log_every_n_steps == 0:
             mlflow.log_metric("train/loss", loss.item(), step=step)
+            mlflow.log_metric("train/lr", current_lr(optim), step=step)
         step += 1
     return step
 
@@ -98,6 +113,9 @@ def _build_accelerator(cfg: Config) -> Accelerator:
     `device == "cpu"` forces `cpu=True`; everything else lets Accelerate
     auto-detect (CUDA > MPS > CPU). MPS does not support bf16/fp16 autocast
     cleanly, so we silently downgrade to "no" precision when MPS is active.
+
+    `gradient_accumulation_steps` enables `accelerator.accumulate(model)` —
+    correctly suppresses DDP grad-sync on micro-steps even on single-GPU.
     """
     cpu_only = cfg.trainer.device == "cpu"
     precision = cfg.trainer.precision
@@ -108,7 +126,15 @@ def _build_accelerator(cfg: Config) -> Accelerator:
             precision,
         )
         precision = "no"
-    return Accelerator(mixed_precision=precision, cpu=cpu_only)
+    if cfg.trainer.grad_accum_steps < 1:
+        raise ValueError(
+            f"grad_accum_steps must be >= 1, got {cfg.trainer.grad_accum_steps}"
+        )
+    return Accelerator(
+        mixed_precision=precision,
+        cpu=cpu_only,
+        gradient_accumulation_steps=cfg.trainer.grad_accum_steps,
+    )
 
 
 def _resolve_output_dir(cfg: Config) -> Path:
@@ -126,6 +152,7 @@ class _TrainState:
     accelerator: Accelerator
     model: nn.Module
     optim: torch.optim.Optimizer
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None
     loss_fn: nn.Module
     train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
     val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
@@ -158,9 +185,26 @@ def _setup(cfg: Config) -> _TrainState:
     )
     loss_fn = nn.CrossEntropyLoss()
 
-    model, optim, train_loader, val_loader = accelerator.prepare(
-        model, optim, train_loader, val_loader
+    # Scheduler total step count is in *optimizer* steps (post-accumulation).
+    total_optim_steps = (
+        len(train_loader) // cfg.trainer.grad_accum_steps
+    ) * cfg.trainer.epochs
+    warmup_steps = resolve_warmup_steps(
+        cfg.trainer.warmup_steps, total_optim_steps
     )
+    scheduler = build_scheduler(
+        cfg.trainer.scheduler, optim, total_optim_steps,
+        warmup_steps, cfg.trainer.min_lr_ratio,
+    )
+
+    if scheduler is not None:
+        model, optim, scheduler, train_loader, val_loader = accelerator.prepare(
+            model, optim, scheduler, train_loader, val_loader
+        )
+    else:
+        model, optim, train_loader, val_loader = accelerator.prepare(
+            model, optim, train_loader, val_loader
+        )
 
     # torch.compile is CUDA-only. Silently skip with a warning elsewhere
     # to avoid compile overhead with no payoff.
@@ -192,6 +236,7 @@ def _setup(cfg: Config) -> _TrainState:
         accelerator=accelerator,
         model=model,
         optim=optim,
+        scheduler=scheduler,
         loss_fn=loss_fn,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -238,7 +283,7 @@ def train(cfg: Config) -> dict[str, float]:
         global_step = 0
         for epoch in range(s.start_epoch, cfg.trainer.epochs):
             global_step = _train_one_epoch(
-                cfg, accelerator, s.model, s.optim, s.loss_fn,
+                cfg, accelerator, s.model, s.optim, s.scheduler, s.loss_fn,
                 s.train_loader, global_step,
             )
             val_loss, val_acc = _evaluate(s.model, s.val_loader, s.loss_fn)

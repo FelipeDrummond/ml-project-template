@@ -63,6 +63,22 @@ class TrainerConfig:
     # faster on most workloads. Worth a flag, opt-in by default since
     # compile can shadow real bugs (e.g. graph breaks at NaN).
     compile_mode: str | None = None
+    # LR scheduler. `null` = constant LR (RL convention).
+    # Options: "linear_warmup_cosine" (BC/IL/SL default).
+    # Warmup matters because Adam's second-moment estimate is unreliable
+    # in the first ~hundred steps (Liu et al. 2020, RAdam, arXiv:1908.03265).
+    # NOT because of bf16 — that's orthogonal.
+    scheduler: str | None = None
+    # `null` -> auto: min(0.1 * total_optim_steps, 1000). Linear warmup
+    # default range from Goyal et al. 2017 (arXiv:1706.02677).
+    warmup_steps: int | None = None
+    # Cosine decay floor as fraction of peak LR. Loshchilov & Hutter 2017
+    # (arXiv:1608.03983) — standard choice is 0.1.
+    min_lr_ratio: float = 0.1
+    # Gradient accumulation: effective_batch = data.batch_size * grad_accum_steps.
+    # Use `accelerator.accumulate(model)` so the multi-GPU path works
+    # without changes (correctly suppresses DDP grad sync on micro-steps).
+    grad_accum_steps: int = 1
     # Checkpointing.
     checkpoint_every_n_epochs: int = 1
     keep_top_k_checkpoints: int = 3

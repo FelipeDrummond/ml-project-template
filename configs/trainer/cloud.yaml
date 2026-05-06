@@ -16,6 +16,12 @@ precision: bf16
 # Set to "default" / "reduce-overhead" / "max-autotune" once you've
 # verified the run is correct without it.
 compile_mode: null
+# LR schedule. Default for BC/IL/SL is linear-warmup + cosine decay.
+# For RL (PPO, SAC), set this to null — those algorithms expect constant LR.
+scheduler: linear_warmup_cosine
+warmup_steps: null  # auto: min(0.1 * total_optim_steps, 1000)
+min_lr_ratio: 0.1
+grad_accum_steps: 1
 # Checkpoint policy.
 checkpoint_every_n_epochs: 1
 keep_top_k_checkpoints: 3

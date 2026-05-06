@@ -12,6 +12,11 @@ detect_anomaly: false
 precision: "no"
 # torch.compile is CUDA-only; it would silently no-op locally anyway.
 compile_mode: null
+# Constant LR locally (short runs, no value in scheduling).
+scheduler: null
+warmup_steps: null
+min_lr_ratio: 0.1
+grad_accum_steps: 1
 # Light checkpoint policy for local — short runs, keep 1.
 checkpoint_every_n_epochs: 1
 keep_top_k_checkpoints: 1
