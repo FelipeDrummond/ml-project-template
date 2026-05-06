@@ -45,8 +45,6 @@ class TrainerConfig:
     lr: float = 1e-3
     weight_decay: float = 0.0
     log_every_n_steps: int = 10
-    # Perf knobs (Tier 1).
-    tf32: bool = True
     # Gradient clipping is regularization / training-stability, not a NaN
     # guard (those are separate). `null` disables clipping.
     grad_clip_max_norm: float | None = 1.0

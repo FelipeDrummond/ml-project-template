@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from contextlib import nullcontext
@@ -43,7 +44,6 @@ from ml_template.training.spot import (
     upload_checkpoint,
 )
 from ml_template.utils import (
-    assert_finite_loss,
     enable_tf32,
     gpu_memory_snapshot,
     reset_peak_memory_stats,
@@ -118,7 +118,6 @@ def _train_one_epoch(
         with accelerator.accumulate(model):
             logits = model(x)
             loss = loss_fn(logits, y)
-            assert_finite_loss(loss, step)
             accelerator.backward(loss)
             if accelerator.sync_gradients and cfg.trainer.grad_clip_max_norm is not None:
                 accelerator.clip_grad_norm_(model.parameters(), cfg.trainer.grad_clip_max_norm)
@@ -130,7 +129,17 @@ def _train_one_epoch(
         compute_s += last_t - now
         samples_seen += x.shape[0]
         if step % cfg.trainer.log_every_n_steps == 0:
-            mlflow.log_metric("train/loss", loss.item(), step=step)
+            # Single .item() pays the only CPU↔GPU sync we accept in the
+            # hot loop; piggyback the NaN/Inf guard on it. Worst-case
+            # detection latency is log_every_n_steps; cheaper than a
+            # per-step isfinite sync.
+            loss_value = loss.item()
+            if not math.isfinite(loss_value):
+                raise RuntimeError(
+                    f"Loss is non-finite at step {step}: {loss_value!r}. "
+                    f"Set trainer.detect_anomaly=true to locate the offending op."
+                )
+            mlflow.log_metric("train/loss", loss_value, step=step)
             mlflow.log_metric("train/lr", current_lr(optim), step=step)
         step += 1
     return step, samples_seen, data_wait_s, compute_s
@@ -198,7 +207,7 @@ def _setup(cfg: Config) -> _TrainState:
     # Reproducibility gate first — `run.allow_dirty=true` is the escape hatch.
     assert_clean_or_allowed(cfg.run.allow_dirty)
     set_seed(cfg.seed)
-    enable_tf32(cfg.trainer.tf32)
+    enable_tf32()
     accelerator = _build_accelerator(cfg)
     logger.info(
         "Accelerator device: %s, precision: %s", accelerator.device, accelerator.mixed_precision
@@ -320,7 +329,6 @@ def train(cfg: Config) -> dict[str, float]:
         )
 
     with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx, sigterm_ctx:
-        mlflow.log_params(_flatten_params(cfg))
         _log_reproducibility_envelope(cfg)
         global_step = 0
         for epoch in range(s.start_epoch, epochs):

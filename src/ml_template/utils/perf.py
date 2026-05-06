@@ -41,16 +41,17 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-def enable_tf32(enabled: bool = True) -> None:
-    """Toggle TF32 for fp32 matmul on Ampere+ GPUs.
+def enable_tf32() -> None:
+    """Enable TF32 for fp32 matmul on Ampere+ GPUs.
 
     Free ~30% speedup for fp32 ops; no-op on older GPUs and on MPS/CPU.
     Mostly matters for ops *outside* autocast (LayerNorm, optimizer math) —
-    redundant for matmuls that are already in bf16/fp16.
+    redundant for matmuls that are already in bf16/fp16. Hardcoded on:
+    the only reason to disable would be exotic numerics work, in which
+    case edit this function directly.
     """
-    precision = "high" if enabled else "highest"
-    torch.set_float32_matmul_precision(precision)
-    logger.info("torch.set_float32_matmul_precision(%r)", precision)
+    torch.set_float32_matmul_precision("high")
+    logger.info("torch.set_float32_matmul_precision('high')")
 
 
 def use_fused_adamw() -> bool:
@@ -61,15 +62,6 @@ def use_fused_adamw() -> bool:
     PyTorch 2.0+).
     """
     return torch.cuda.is_available()
-
-
-def assert_finite_loss(loss: torch.Tensor, step: int) -> None:
-    """Cheap NaN/Inf guard. Raises so a divergent run dies in seconds."""
-    if not torch.isfinite(loss):
-        raise RuntimeError(
-            f"Loss is non-finite at step {step}: {loss.item()!r}. "
-            f"Set trainer.detect_anomaly=true to locate the offending op."
-        )
 
 
 def gpu_memory_snapshot() -> dict[str, float]:

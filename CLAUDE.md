@@ -2,6 +2,8 @@
 
 Agent-facing map of this repo. Read this first.
 
+> Note: `AGENTS.md` mirrors this file. Keep them in sync.
+
 ## Overview
 
 PyTorch deep-learning research project. Local dev on MacBook M-series (MPS or
@@ -38,7 +40,7 @@ fabricate metrics, loss curves, or run ids.
 | Smoke test (script) | `scripts/overfit_one_batch.py` |
 | Smoke test (pytest) | `tests/test_train_smoke.py` |
 | Tests | `tests/` |
-| Research docs | `docs/` (start at `docs/README.md`) |
+| Research docs | `docs/` (start at `docs/README.md`; see `docs/template_guide.md` for template features and `docs/followups.md` for known gaps) |
 
 ## Commands
 
@@ -54,10 +56,17 @@ make format
 make typecheck
 make test
 make smoke         # one-batch overfit; must drive loss → ~0
+make dev-run       # fast_dev_run end-to-end (1 train + 1 val batch + ckpt round-trip)
 make train         # default Hydra config
 make train OVERRIDES="trainer=cloud model.hidden_dim=256"
 make check         # lint + typecheck + test (the standard pre-push check)
+
+uv run pytest tests/test_foo.py::test_bar -x   # single test, fail fast
 ```
+
+`make smoke` and `make dev-run` verify different things: `smoke` confirms the
+loss can be driven to zero on a single batch (model wiring); `dev-run`
+confirms the full train→val→checkpoint loop wires up end-to-end.
 
 For cloud workflow targets (`cloud-setup`, `cloud-train`, `pull-results`),
 `REMOTE` and `REMOTE_DIR` must be exported.
@@ -152,7 +161,6 @@ The training loop ships with several knobs aimed at keeping cloud GPU
 spend bounded:
 
 - `trainer.precision` — `"bf16"` on Ampere+ for ~2x speedup
-- `trainer.tf32` — free ~30% speedup for fp32 ops outside autocast
 - `trainer.compile_mode` — opt-in `torch.compile` (CUDA-only)
 - `trainer.early_stop_patience` — quit when val/loss plateaus
 - `trainer.max_wall_seconds` — hard wall-clock budget
@@ -166,6 +174,31 @@ The SIGTERM handler always runs (regardless of `checkpoint_uri`); it
 saves a last-gasp checkpoint locally and uploads to the URI if set.
 AWS spot gives 2 min, GCP 30s — uploads are best-effort with timeout
 falling through to local.
+
+## Project-init choices vs per-run knobs
+
+`TrainerConfig` knobs split into two tiers. Pick the project-init ones
+once when instantiating the template, set them in your trainer profiles,
+then leave them alone — they're noise on the CLI.
+
+**Project-init (set once, don't tune per run):**
+- `compile_mode` — `null` for research, `"default"` for production
+- `scheduler` — pick by training paradigm (BC/IL/SL → cosine; RL → null)
+- `grad_accum_steps` — pick once based on memory vs target effective batch
+- `log_every_n_steps` — 50 cloud / 5–10 local; only revisit if profiling
+- `checkpoint_every_n_epochs`, `keep_top_k_checkpoints` — set per profile
+
+**Per-run (tune freely on the CLI):**
+- `lr`, `weight_decay`, `epochs`, `seed` — standard hyperparameters
+- `precision` — flip when chasing numerical issues
+- `grad_clip_max_norm` — regularization HP
+- `early_stop_patience`, `max_wall_seconds` — cost controls per experiment
+- `detect_anomaly` — diagnostic; flip on for one run when chasing a NaN
+- `fast_dev_run` — on demand
+
+Things that used to be flags but are now hardcoded (don't add them back
+without a reason): `tf32` is always on (`utils/perf.py::enable_tf32`);
+`use_fused_adamw` auto-detects CUDA.
 
 ## What NOT to touch without asking
 

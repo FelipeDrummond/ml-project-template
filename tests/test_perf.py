@@ -23,7 +23,6 @@ from ml_template.config_schemas import (
 from ml_template.data import build_dataloaders
 from ml_template.training import train
 from ml_template.utils.perf import (
-    assert_finite_loss,
     enable_tf32,
     gpu_memory_snapshot,
     reset_peak_memory_stats,
@@ -32,32 +31,12 @@ from ml_template.utils.perf import (
 
 
 def test_enable_tf32_sets_high_precision() -> None:
-    enable_tf32(True)
+    enable_tf32()
     assert torch.get_float32_matmul_precision() == "high"
-
-
-def test_enable_tf32_false_sets_highest_precision() -> None:
-    enable_tf32(False)
-    assert torch.get_float32_matmul_precision() == "highest"
-    enable_tf32(True)  # restore for other tests
 
 
 def test_use_fused_adamw_matches_cuda_availability() -> None:
     assert use_fused_adamw() == torch.cuda.is_available()
-
-
-def test_assert_finite_loss_passes_on_finite() -> None:
-    assert_finite_loss(torch.tensor(0.123), step=0)
-
-
-def test_assert_finite_loss_raises_on_nan() -> None:
-    with pytest.raises(RuntimeError, match="non-finite"):
-        assert_finite_loss(torch.tensor(float("nan")), step=42)
-
-
-def test_assert_finite_loss_raises_on_inf() -> None:
-    with pytest.raises(RuntimeError, match="non-finite"):
-        assert_finite_loss(torch.tensor(float("inf")), step=42)
 
 
 def test_gpu_memory_snapshot_empty_off_cuda() -> None:

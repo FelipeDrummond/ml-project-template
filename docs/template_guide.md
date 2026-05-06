@@ -109,7 +109,7 @@ disable them.
 
 | Knob | Default | Disabling? |
 |---|---|---|
-| TF32 (`trainer.tf32`) | `true` | Silent no-op on non-Ampere. Leave on. |
+| TF32 | always on (hardcoded in `enable_tf32`) | Silent no-op on non-Ampere. Edit the function if you really need it off. |
 | Fused AdamW | auto-on when CUDA | Auto-skipped on MPS/CPU. Leave on. |
 | NaN/Inf loss guard | always | ~3 lines, catches divergence in seconds. Leave on. |
 | `set_to_none=True` for `zero_grad` | always | Standard. Leave on. |

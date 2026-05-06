@@ -4,8 +4,6 @@ epochs: 50
 lr: 1.0e-3
 weight_decay: 1.0e-4
 log_every_n_steps: 50
-# Perf knobs.
-tf32: true
 grad_clip_max_norm: 1.0
 detect_anomaly: false
 # bf16 autocast — assumes Ampere+ (3090, 4090, A100, H100). Switch to

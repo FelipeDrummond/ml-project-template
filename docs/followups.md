@@ -32,7 +32,7 @@ make train OVERRIDES="trainer=cloud trainer.epochs=2 data.n_samples=1024"
 - bf16 autocast trains without NaN
 - `gpu/util_pct` and `gpu/mem_*` metrics appear in MLflow
 - `torch.compile` (set `compile_mode="default"`) works after warm-up
-- `nvidia-smi` confirms TF32 enabled (~30% matmul speedup vs `tf32=false`)
+- `nvidia-smi` confirms TF32 enabled (~30% matmul speedup vs no TF32)
 
 ---
 
