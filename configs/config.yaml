@@ -1,0 +1,25 @@
+# Top-level Hydra config. Composes the default group selections below.
+# Override anything from the CLI:
+#   make train trainer=cloud model.hidden_dim=256 seed=7
+
+defaults:
+  - base_config
+  - data: default
+  - model: mlp
+  - trainer: local
+  - experiment: null
+  - _self_
+
+seed: 42
+
+mlflow:
+  tracking_uri: file:./mlruns
+  experiment_name: default
+  run_name: null
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

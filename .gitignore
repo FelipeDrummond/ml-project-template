@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Environments
+.venv/
+venv/
+.env
+.python-version.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project-specific (gitignored runtime artifacts)
+data/
+outputs/
+mlruns/
+wandb/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Hydra
+.hydra/
+
+# Notebook checkpoints
+.ipynb_checkpoints/

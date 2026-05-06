@@ -1,0 +1,24 @@
+# Default text normalization
+* text=auto eol=lf
+
+# Python source
+*.py text eol=lf
+
+# YAML configs
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Jupyter notebooks: clear outputs from diffs (run nbstripout if/when added)
+*.ipynb text eol=lf
+
+# Binary plots/figures
+*.png binary
+*.jpg binary
+*.pdf binary
+*.svg text eol=lf
+
+# Model weights — never store in git; if forced, mark binary
+*.pt binary
+*.pth binary
+*.ckpt binary
+*.onnx binary

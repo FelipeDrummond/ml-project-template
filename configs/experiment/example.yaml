@@ -1,0 +1,18 @@
+# @package _global_
+# Example experiment composition. Override defaults from the top-level config.
+# Run: make train experiment=example
+
+data:
+  n_samples: 1024
+  batch_size: 64
+
+model:
+  hidden_dim: 128
+  n_layers: 3
+
+trainer:
+  epochs: 10
+
+mlflow:
+  experiment_name: example
+  run_name: example-baseline

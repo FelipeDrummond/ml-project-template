@@ -1,0 +1,6 @@
+# Local dev (MacBook M-series). MPS or CPU; small batches; few epochs.
+device: auto
+epochs: 2
+lr: 1.0e-3
+weight_decay: 0.0
+log_every_n_steps: 5

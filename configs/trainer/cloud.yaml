@@ -1,0 +1,6 @@
+# Cloud GPU box. Explicit CUDA — fail loud if absent.
+device: cuda
+epochs: 50
+lr: 1.0e-3
+weight_decay: 1.0e-4
+log_every_n_steps: 50
