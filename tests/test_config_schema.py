@@ -22,6 +22,7 @@ from ml_template.config_schemas import (
     DataConfig,
     MLflowConfig,
     ModelConfig,
+    RunConfig,
     TrainerConfig,
     register_configs,
 )
@@ -163,6 +164,7 @@ HYDRA_META_KEYS: frozenset[str] = frozenset({"defaults", "hydra", "_self_", "_ta
 
 # Top-level config fields → their schema dataclass (for nested validation).
 NESTED_SCHEMAS: dict[str, type] = {
+    "run": RunConfig,
     "data": DataConfig,
     "model": ModelConfig,
     "trainer": TrainerConfig,
@@ -209,11 +211,7 @@ def _yaml_files(*subdirs: str) -> list[Path]:
 
 @pytest.mark.parametrize(
     ("group", "yaml_path"),
-    [
-        (group, p)
-        for group in GROUP_SCHEMAS
-        for p in (CONFIGS_DIR / group).glob("*.yaml")
-    ],
+    [(group, p) for group in GROUP_SCHEMAS for p in (CONFIGS_DIR / group).glob("*.yaml")],
 )
 def test_group_yaml_keys_match_schema(group: str, yaml_path: Path) -> None:
     """No `configs/<group>/*.yaml` may introduce a key absent from its schema."""
@@ -231,14 +229,10 @@ def test_top_level_config_keys_match_schema() -> None:
     assert not bad, f"config.yaml introduces unknown keys: {bad}"
 
 
-@pytest.mark.parametrize(
-    "yaml_path", list((CONFIGS_DIR / "experiment").glob("*.yaml"))
-)
+@pytest.mark.parametrize("yaml_path", list((CONFIGS_DIR / "experiment").glob("*.yaml")))
 def test_experiment_yaml_keys_match_schema(yaml_path: Path) -> None:
     """Experiment files use `# @package _global_`, so their top-level keys
     must be on `Config` and nested subtrees on the corresponding schema."""
     data = yaml.safe_load(yaml_path.read_text()) or {}
     bad = _unknown_keys(data, Config, yaml_path.name)
-    assert not bad, (
-        f"{yaml_path} introduces keys absent from Config / nested schemas: {bad}"
-    )
+    assert not bad, f"{yaml_path} introduces keys absent from Config / nested schemas: {bad}"

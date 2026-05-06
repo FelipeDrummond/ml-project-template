@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, is_dataclass
@@ -23,6 +24,13 @@ from ml_template.training.checkpoint import (
     load_checkpoint,
     prune_top_k,
     save_checkpoint,
+)
+from ml_template.training.reproducibility import (
+    assert_clean_or_allowed,
+    env_summary,
+    freeze_packages,
+    git_diff,
+    git_state,
 )
 from ml_template.training.scheduler import (
     build_scheduler,
@@ -113,9 +121,7 @@ def _train_one_epoch(
             assert_finite_loss(loss, step)
             accelerator.backward(loss)
             if accelerator.sync_gradients and cfg.trainer.grad_clip_max_norm is not None:
-                accelerator.clip_grad_norm_(
-                    model.parameters(), cfg.trainer.grad_clip_max_norm
-                )
+                accelerator.clip_grad_norm_(model.parameters(), cfg.trainer.grad_clip_max_norm)
             optim.step()
             if scheduler is not None:
                 scheduler.step()
@@ -150,9 +156,7 @@ def _build_accelerator(cfg: Config) -> Accelerator:
         )
         precision = "no"
     if cfg.trainer.grad_accum_steps < 1:
-        raise ValueError(
-            f"grad_accum_steps must be >= 1, got {cfg.trainer.grad_accum_steps}"
-        )
+        raise ValueError(f"grad_accum_steps must be >= 1, got {cfg.trainer.grad_accum_steps}")
     return Accelerator(
         mixed_precision=precision,
         cpu=cpu_only,
@@ -186,10 +190,19 @@ class _TrainState:
 
 def _setup(cfg: Config) -> _TrainState:
     """Build everything the training loop needs: accelerator, model+optim
-    (prepared and optionally compiled), dataloaders, and resume state."""
+    (prepared and optionally compiled), dataloaders, and resume state.
+
+    Also runs the reproducibility gate first (refuses to spend money on
+    a run we can't reconstruct) and the seed/TF32 init.
+    """
+    # Reproducibility gate first — `run.allow_dirty=true` is the escape hatch.
+    assert_clean_or_allowed(cfg.run.allow_dirty)
+    set_seed(cfg.seed)
+    enable_tf32(cfg.trainer.tf32)
     accelerator = _build_accelerator(cfg)
-    logger.info("Accelerator device: %s, precision: %s",
-                accelerator.device, accelerator.mixed_precision)
+    logger.info(
+        "Accelerator device: %s, precision: %s", accelerator.device, accelerator.mixed_precision
+    )
 
     train_loader, val_loader = build_dataloaders(cfg.data, seed=cfg.seed)
     model = MLP(
@@ -209,15 +222,14 @@ def _setup(cfg: Config) -> _TrainState:
     loss_fn = nn.CrossEntropyLoss()
 
     # Scheduler total step count is in *optimizer* steps (post-accumulation).
-    total_optim_steps = (
-        len(train_loader) // cfg.trainer.grad_accum_steps
-    ) * cfg.trainer.epochs
-    warmup_steps = resolve_warmup_steps(
-        cfg.trainer.warmup_steps, total_optim_steps
-    )
+    total_optim_steps = (len(train_loader) // cfg.trainer.grad_accum_steps) * cfg.trainer.epochs
+    warmup_steps = resolve_warmup_steps(cfg.trainer.warmup_steps, total_optim_steps)
     scheduler = build_scheduler(
-        cfg.trainer.scheduler, optim, total_optim_steps,
-        warmup_steps, cfg.trainer.min_lr_ratio,
+        cfg.trainer.scheduler,
+        optim,
+        total_optim_steps,
+        warmup_steps,
+        cfg.trainer.min_lr_ratio,
     )
 
     if scheduler is not None:
@@ -233,8 +245,7 @@ def _setup(cfg: Config) -> _TrainState:
     # to avoid compile overhead with no payoff.
     if cfg.trainer.compile_mode is not None:
         if accelerator.device.type == "cuda":
-            logger.info("Compiling model with torch.compile(mode=%r)",
-                        cfg.trainer.compile_mode)
+            logger.info("Compiling model with torch.compile(mode=%r)", cfg.trainer.compile_mode)
             # torch.compile returns OptimizedModule (an nn.Module subclass)
             # but pyright stubs type it as Callable; cast back so downstream
             # code remains nn.Module-typed.
@@ -242,7 +253,8 @@ def _setup(cfg: Config) -> _TrainState:
         else:
             logger.warning(
                 "compile_mode=%r requested but device is %s; skipping torch.compile.",
-                cfg.trainer.compile_mode, accelerator.device.type,
+                cfg.trainer.compile_mode,
+                accelerator.device.type,
             )
 
     start_epoch = 0
@@ -271,8 +283,6 @@ def _setup(cfg: Config) -> _TrainState:
 
 def train(cfg: Config) -> dict[str, float]:
     """Run training end-to-end. Returns final metrics for tests/callers."""
-    set_seed(cfg.seed)
-    enable_tf32(cfg.trainer.tf32)
     s = _setup(cfg)
     accelerator = s.accelerator  # used in many places below; alias once
     best_meta = s.best_meta
@@ -281,9 +291,7 @@ def train(cfg: Config) -> dict[str, float]:
     mlflow.set_experiment(cfg.mlflow.experiment_name)
 
     anomaly_ctx = (
-        torch.autograd.set_detect_anomaly(True)
-        if cfg.trainer.detect_anomaly
-        else nullcontext()
+        torch.autograd.set_detect_anomaly(True) if cfg.trainer.detect_anomaly else nullcontext()
     )
 
     final_metrics: dict[str, float] = {}
@@ -297,9 +305,7 @@ def train(cfg: Config) -> dict[str, float]:
         "step": 0,
         "val_loss": float("inf"),
     }
-    sigterm_ctx = _build_sigterm_ctx(
-        cfg, accelerator, s.checkpoint_root.parent, last_state
-    )
+    sigterm_ctx = _build_sigterm_ctx(cfg, accelerator, s.checkpoint_root.parent, last_state)
 
     fdr = cfg.trainer.fast_dev_run
     epochs = 1 if fdr else cfg.trainer.epochs
@@ -308,21 +314,29 @@ def train(cfg: Config) -> dict[str, float]:
     if fdr:
         logger.warning(
             "fast_dev_run: 1 epoch, %d train batch(es), %d val batch(es), "
-            "forced checkpoint + load round-trip.", train_cap, val_cap,
+            "forced checkpoint + load round-trip.",
+            train_cap,
+            val_cap,
         )
 
     with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx, sigterm_ctx:
         mlflow.log_params(_flatten_params(cfg))
+        _log_reproducibility_envelope(cfg)
         global_step = 0
         for epoch in range(s.start_epoch, epochs):
             reset_peak_memory_stats()
             global_step, samples_seen, data_wait_s, compute_s = _train_one_epoch(
-                cfg, accelerator, s.model, s.optim, s.scheduler, s.loss_fn,
-                s.train_loader, global_step, max_batches=train_cap,
+                cfg,
+                accelerator,
+                s.model,
+                s.optim,
+                s.scheduler,
+                s.loss_fn,
+                s.train_loader,
+                global_step,
+                max_batches=train_cap,
             )
-            val_loss, val_acc = _evaluate(
-                s.model, s.val_loader, s.loss_fn, max_batches=val_cap
-            )
+            val_loss, val_acc = _evaluate(s.model, s.val_loader, s.loss_fn, max_batches=val_cap)
             mlflow.log_metric("val/loss", val_loss, step=epoch)
             mlflow.log_metric("val/accuracy", val_acc, step=epoch)
             _log_epoch_perf(epoch, samples_seen, data_wait_s, compute_s)
@@ -349,18 +363,14 @@ def train(cfg: Config) -> dict[str, float]:
             # fast_dev_run forces a save+load round-trip regardless of
             # checkpoint_every_n_epochs; that's the bug it most often catches.
             if fdr or (epoch + 1) % cfg.trainer.checkpoint_every_n_epochs == 0:
-                ckpt_path = _save_and_maybe_upload(
-                    cfg, accelerator, s.checkpoint_root, ckpt_meta
-                )
+                ckpt_path = _save_and_maybe_upload(cfg, accelerator, s.checkpoint_root, ckpt_meta)
                 if fdr:
                     load_checkpoint(accelerator, ckpt_path)
                     logger.info("fast_dev_run: checkpoint round-trip OK.")
 
             # Cost controls run after the checkpoint, so an early exit
             # always leaves a fresh on-disk checkpoint to resume from.
-            stop_reason = _should_stop(
-                cfg, epoch, epochs_since_improvement, train_start
-            )
+            stop_reason = _should_stop(cfg, epoch, epochs_since_improvement, train_start)
             if stop_reason is not None:
                 final_metrics[stop_reason[0]] = stop_reason[1]
                 break
@@ -368,9 +378,38 @@ def train(cfg: Config) -> dict[str, float]:
     return final_metrics
 
 
-def _log_epoch_perf(
-    epoch: int, samples_seen: int, data_wait_s: float, compute_s: float
-) -> None:
+def _log_reproducibility_envelope(cfg: Config) -> None:
+    """Log git state + env + cli + diff + freeze to the active MLflow run.
+
+    Splits naturally into:
+    - small string params (sha, branch, dirty flag, env summary, argv)
+    - artifacts (full diff if dirty, package freeze, resolved config)
+    """
+    params: dict[str, str] = {}
+    params.update(git_state())
+    params.update(env_summary())
+    params["run/argv"] = " ".join(sys.argv)
+    # MLflow caps params at 500 chars; truncate defensively.
+    truncated = {k: (v[:500] if isinstance(v, str) else v) for k, v in params.items()}
+    mlflow.log_params(truncated)
+
+    # Artifacts: diff (only when dirty), pip freeze, resolved config.
+    if params.get("git/dirty") == "true":
+        diff = git_diff()
+        if diff:
+            mlflow.log_text(diff, "git_diff.patch")
+    freeze = freeze_packages()
+    if freeze:
+        mlflow.log_text(freeze, "packages.txt")
+    mlflow.log_text(_render_resolved_config(cfg), "resolved_config.txt")
+
+
+def _render_resolved_config(cfg: Config) -> str:
+    """Flat dotted-key dump of the resolved (post-overrides) config."""
+    return "\n".join(f"{k}={v}" for k, v in sorted(_flatten_params(cfg).items()))
+
+
+def _log_epoch_perf(epoch: int, samples_seen: int, data_wait_s: float, compute_s: float) -> None:
     """Log throughput, dataloader-wait %, and GPU memory/util to MLflow.
 
     `data_wait_pct` is the headline cost-of-IO number — over ~20% means
@@ -380,9 +419,7 @@ def _log_epoch_perf(
     total = data_wait_s + compute_s
     if total > 0:
         mlflow.log_metric("perf/samples_per_sec", samples_seen / total, step=epoch)
-        mlflow.log_metric(
-            "perf/dataloader_wait_pct", 100.0 * data_wait_s / total, step=epoch
-        )
+        mlflow.log_metric("perf/dataloader_wait_pct", 100.0 * data_wait_s / total, step=epoch)
         mlflow.log_metric("perf/epoch_seconds", total, step=epoch)
     for name, value in gpu_memory_snapshot().items():
         mlflow.log_metric(name, value, step=epoch)
@@ -451,18 +488,19 @@ def _should_stop(
     ):
         logger.info(
             "Early stopping at epoch %d: %s has not improved for %d epochs.",
-            epoch, TRACKED_METRIC_NAME, epochs_since_improvement,
+            epoch,
+            TRACKED_METRIC_NAME,
+            epochs_since_improvement,
         )
         return ("stopped_at_epoch", float(epoch))
 
     elapsed = time.monotonic() - train_start
-    if (
-        cfg.trainer.max_wall_seconds is not None
-        and elapsed >= cfg.trainer.max_wall_seconds
-    ):
+    if cfg.trainer.max_wall_seconds is not None and elapsed >= cfg.trainer.max_wall_seconds:
         logger.info(
             "Wall-clock budget exhausted at epoch %d (%.1fs >= %ds). Exiting cleanly.",
-            epoch, elapsed, cfg.trainer.max_wall_seconds,
+            epoch,
+            elapsed,
+            cfg.trainer.max_wall_seconds,
         )
         return ("wall_seconds", elapsed)
 

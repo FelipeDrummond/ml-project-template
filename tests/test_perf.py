@@ -82,9 +82,7 @@ def test_perf_metrics_logged_to_mlflow(tmp_path: Path) -> None:
         output_dir=str(tmp_path / "run"),
         data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
         model=ModelConfig(hidden_dim=8, n_layers=1),
-        trainer=TrainerConfig(
-            device="cpu", epochs=1, lr=1e-3, grad_clip_max_norm=None
-        ),
+        trainer=TrainerConfig(device="cpu", epochs=1, lr=1e-3, grad_clip_max_norm=None),
         mlflow=MLflowConfig(
             tracking_uri=f"file:{tmp_path / 'mlruns'}",
             experiment_name="perf_metrics",
@@ -140,18 +138,16 @@ def test_compile_mode_silently_skipped_on_non_cuda(
         output_dir=str(tmp_path / "run"),
         data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
         model=ModelConfig(hidden_dim=8, n_layers=1),
-        trainer=TrainerConfig(
-            device="cpu", epochs=1, lr=1e-3, compile_mode="default"
-        ),
+        trainer=TrainerConfig(device="cpu", epochs=1, lr=1e-3, compile_mode="default"),
         mlflow=MLflowConfig(
             tracking_uri=f"file:{tmp_path / 'mlruns'}",
             experiment_name="test_compile_skip",
         ),
     )
     train(cfg)
-    assert any(
-        "skipping torch.compile" in record.message for record in caplog.records
-    ), [r.message for r in caplog.records]
+    assert any("skipping torch.compile" in record.message for record in caplog.records), [
+        r.message for r in caplog.records
+    ]
 
 
 def test_grad_clip_can_be_disabled(tmp_path: Path) -> None:
@@ -161,9 +157,7 @@ def test_grad_clip_can_be_disabled(tmp_path: Path) -> None:
         output_dir=str(tmp_path / "run"),
         data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
         model=ModelConfig(hidden_dim=8, n_layers=1),
-        trainer=TrainerConfig(
-            device="cpu", epochs=1, lr=1e-3, grad_clip_max_norm=None
-        ),
+        trainer=TrainerConfig(device="cpu", epochs=1, lr=1e-3, grad_clip_max_norm=None),
         mlflow=MLflowConfig(
             tracking_uri=f"file:{tmp_path / 'mlruns'}",
             experiment_name="test_clip_off",

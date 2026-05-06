@@ -130,6 +130,22 @@ and bypasses struct mode. Use it consciously when adding a field; never use
 4. Create `configs/scheduler/<variant>.yaml` files.
 5. Reference the group in `configs/config.yaml` `defaults:` list.
 
+## Reproducibility
+
+Every training run logs to MLflow:
+- **Params**: git SHA, branch, dirty flag, full env summary (python, torch,
+  CUDA, GPU, hostname), `sys.argv`.
+- **Artifacts**: `git_diff.patch` (only when dirty), `packages.txt`
+  (`uv pip freeze`), `resolved_config.txt` (the post-Hydra-overrides config
+  that actually ran).
+
+**Strict-by-default dirty-tree gate**: `train()` refuses to start when the
+working tree has uncommitted changes. Override per-run with
+`run.allow_dirty=true` (escape hatch for fast iteration). Implemented in
+`src/ml_template/training/reproducibility.py::assert_clean_or_allowed`.
+Tests bypass this via an autouse fixture in `tests/conftest.py` — the
+gate itself is exercised by `tests/test_reproducibility.py`.
+
 ## Cost controls and spot survival
 
 The training loop ships with several knobs aimed at keeping cloud GPU

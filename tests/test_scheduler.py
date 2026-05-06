@@ -51,8 +51,9 @@ def test_null_scheduler_returns_none() -> None:
 
 def test_linear_warmup_cosine_shape() -> None:
     optim = _make_optim(lr=1.0)
-    sched = build_scheduler("linear_warmup_cosine", optim, total_optim_steps=100,
-                            warmup_steps=10, min_lr_ratio=0.1)
+    sched = build_scheduler(
+        "linear_warmup_cosine", optim, total_optim_steps=100, warmup_steps=10, min_lr_ratio=0.1
+    )
     assert sched is not None
 
     lrs: list[float] = [current_lr(optim)]

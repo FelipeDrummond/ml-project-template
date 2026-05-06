@@ -76,9 +76,7 @@ def test_fast_dev_run_with_grad_accum_completes(tmp_path: Path) -> None:
 
 def test_fast_dev_run_with_scheduler_completes(tmp_path: Path) -> None:
     """Scheduler must build and step at least once."""
-    cfg = _make_cfg(
-        tmp_path, scheduler="linear_warmup_cosine", warmup_steps=1, min_lr_ratio=0.1
-    )
+    cfg = _make_cfg(tmp_path, scheduler="linear_warmup_cosine", warmup_steps=1, min_lr_ratio=0.1)
     train(cfg)
     assert (tmp_path / "run" / "checkpoints" / "epoch_0000").is_dir()
 
@@ -91,9 +89,9 @@ def test_fast_dev_run_round_trip_catches_format_drift(
 
     cfg = _make_cfg(tmp_path)
     train(cfg)
-    assert any(
-        "round-trip OK" in record.message for record in caplog.records
-    ), "fast_dev_run did not log the round-trip success line"
+    assert any("round-trip OK" in record.message for record in caplog.records), (
+        "fast_dev_run did not log the round-trip success line"
+    )
 
 
 def test_fast_dev_run_runs_quickly(tmp_path: Path) -> None:
@@ -117,7 +115,8 @@ def test_non_fast_dev_run_still_runs_full_epochs(tmp_path: Path) -> None:
     cfg.trainer.epochs = 2
     train(cfg)
     ckpts = sorted(
-        p.name for p in (tmp_path / "run" / "checkpoints").iterdir()
+        p.name
+        for p in (tmp_path / "run" / "checkpoints").iterdir()
         if (p / META_FILENAME).is_file()
     )
     assert len(ckpts) >= 1  # may be pruned by keep_top_k but at least one

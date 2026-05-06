@@ -70,8 +70,14 @@ def save_checkpoint(
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    logger.info("Saved checkpoint: %s (epoch=%d step=%d %s=%.4f)",
-                output_dir, meta.epoch, meta.step, meta.metric_name, meta.metric_value)
+    logger.info(
+        "Saved checkpoint: %s (epoch=%d step=%d %s=%.4f)",
+        output_dir,
+        meta.epoch,
+        meta.step,
+        meta.metric_name,
+        meta.metric_value,
+    )
     return output_dir
 
 
@@ -90,8 +96,14 @@ def load_checkpoint(accelerator: Accelerator, input_dir: Path) -> CheckpointMeta
     accelerator.load_state(str(input_dir))
     meta_dict = json.loads(meta_path.read_text())
     meta = CheckpointMeta(**meta_dict)
-    logger.info("Resumed from %s (epoch=%d step=%d %s=%.4f)",
-                input_dir, meta.epoch, meta.step, meta.metric_name, meta.metric_value)
+    logger.info(
+        "Resumed from %s (epoch=%d step=%d %s=%.4f)",
+        input_dir,
+        meta.epoch,
+        meta.step,
+        meta.metric_name,
+        meta.metric_value,
+    )
     return meta
 
 

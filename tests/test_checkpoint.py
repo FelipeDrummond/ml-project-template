@@ -140,11 +140,13 @@ def test_prune_top_k_noop_when_under_limit(tmp_path: Path) -> None:
     model, optim = accelerator.prepare(model, optim)
 
     save_checkpoint(
-        accelerator, tmp_path / "ck0",
+        accelerator,
+        tmp_path / "ck0",
         CheckpointMeta(0, 0, "val/loss", 0.5, "min"),
     )
     save_checkpoint(
-        accelerator, tmp_path / "ck1",
+        accelerator,
+        tmp_path / "ck1",
         CheckpointMeta(1, 1, "val/loss", 0.3, "min"),
     )
     deleted = prune_top_k(tmp_path, keep_k=5)
@@ -209,9 +211,7 @@ def test_resume_continues_from_checkpoint(tmp_path: Path) -> None:
     resume_ckpt = tmp_path / "partial" / "run" / "checkpoints" / "epoch_0001"
     assert resume_ckpt.is_dir()
 
-    resumed = _make_cfg(
-        tmp_path / "resumed", epochs=3, resume_from=str(resume_ckpt)
-    )
+    resumed = _make_cfg(tmp_path / "resumed", epochs=3, resume_from=str(resume_ckpt))
     resumed_metrics = train(resumed)
 
     # Loss curves on this synthetic problem are deterministic enough on CPU

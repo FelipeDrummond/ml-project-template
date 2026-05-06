@@ -45,9 +45,7 @@ def build_scheduler(
     if name is None:
         return None
     if name not in VALID_SCHEDULERS:
-        raise ValueError(
-            f"Unknown scheduler {name!r}. Must be one of {sorted(VALID_SCHEDULERS)}."
-        )
+        raise ValueError(f"Unknown scheduler {name!r}. Must be one of {sorted(VALID_SCHEDULERS)}.")
     if total_optim_steps <= 0:
         raise ValueError(
             f"total_optim_steps must be > 0, got {total_optim_steps}. "
@@ -56,9 +54,7 @@ def build_scheduler(
     if not 0.0 <= min_lr_ratio <= 1.0:
         raise ValueError(f"min_lr_ratio must be in [0,1], got {min_lr_ratio}")
     if warmup_steps < 0 or warmup_steps > total_optim_steps:
-        raise ValueError(
-            f"warmup_steps={warmup_steps} out of range [0,{total_optim_steps}]"
-        )
+        raise ValueError(f"warmup_steps={warmup_steps} out of range [0,{total_optim_steps}]")
 
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
@@ -71,7 +67,10 @@ def build_scheduler(
 
     logger.info(
         "Built %s scheduler: total_optim_steps=%d warmup_steps=%d min_lr_ratio=%.3f",
-        name, total_optim_steps, warmup_steps, min_lr_ratio,
+        name,
+        total_optim_steps,
+        warmup_steps,
+        min_lr_ratio,
     )
     return LambdaLR(optim, lr_lambda=lr_lambda)
 

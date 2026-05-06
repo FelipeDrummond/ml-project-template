@@ -113,12 +113,23 @@ class MLflowConfig:
 
 
 @dataclass
+class RunConfig:
+    """Run-level reproducibility / safety controls."""
+
+    # Refuse to start training when the working tree has uncommitted
+    # changes. Strict-by-default — six months from now you will thank
+    # yourself. Override with `run.allow_dirty=true` for fast iteration.
+    allow_dirty: bool = False
+
+
+@dataclass
 class Config:
     seed: int = 42
     # Hydra populates this from `HydraConfig.get().runtime.output_dir` in
     # cli/train.py — used as the root for checkpoints. Tests pass an
     # explicit path.
     output_dir: str | None = None
+    run: RunConfig = field(default_factory=RunConfig)
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -132,3 +143,4 @@ def register_configs() -> None:
     cs.store(group="data", name="base_data", node=DataConfig)
     cs.store(group="model", name="base_model", node=ModelConfig)
     cs.store(group="trainer", name="base_trainer", node=TrainerConfig)
+    cs.store(group="run", name="base_run", node=RunConfig)
