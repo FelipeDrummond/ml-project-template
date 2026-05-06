@@ -138,6 +138,12 @@ Research and project docs live under [`docs/`](docs/README.md). Start with
 `docs/research_statement.md` for the project's goal and `docs/methods.md` for
 the current architecture and training procedure.
 
+If you're **instantiating this template for a new project**, read
+[`docs/template_guide.md`](docs/template_guide.md) first — it covers every
+feature this template ships with, the configuration system, and
+per-project-type checklists of "first things to change" (especially for
+RL projects, where several of the defaults are deliberately wrong).
+
 ## For coding agents
 
 This repo is laid out for agent-driven development. Read
