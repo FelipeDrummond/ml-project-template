@@ -102,6 +102,34 @@ checklist before submitting a change:
   a real run on real data), create `docs/experiments/EXP-NNNN-<slug>.md`
   and link the MLflow run id. Never fabricate.
 
+## Configs and type checking
+
+The Hydra config tree is type-checked against the dataclasses in
+`src/ml_template/config_schemas.py`. Three layers:
+
+1. **Compose-time** — typos in YAML group files and CLI overrides like
+   `data.foo=1` (where `foo` doesn't exist on `DataConfig`) fail with a
+   `ConfigCompositionException`.
+2. **Load-time** — `OmegaConf.to_object(cfg)` in `cli/train.py` returns a real
+   `Config` instance; missing or mistyped fields fail here.
+3. **Runtime** — `resolve_device(prefer)` validates against `VALID_PREFS`
+   (OmegaConf doesn't fully support `Literal`).
+
+Tests in `tests/test_config_schema.py` pin this contract — do not weaken
+them without surfacing the change.
+
+**Gotcha**: `+key=val` (with the `+` prefix) explicitly *adds* a new field
+and bypasses struct mode. Use it consciously when adding a field; never use
+`+` to "fix" a typo that the schema rejects — that hides the typo instead.
+
+**Adding a new config group** (e.g. `scheduler`):
+1. Add a `@dataclass class SchedulerConfig` in `config_schemas.py`.
+2. Add it as a typed field on `Config`: `scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)`.
+3. Register the per-group schema in `register_configs()`:
+   `cs.store(group="scheduler", name="base_scheduler", node=SchedulerConfig)`.
+4. Create `configs/scheduler/<variant>.yaml` files.
+5. Reference the group in `configs/config.yaml` `defaults:` list.
+
 ## What NOT to touch without asking
 
 These have out-of-repo consequences. Stop and confirm with the user before

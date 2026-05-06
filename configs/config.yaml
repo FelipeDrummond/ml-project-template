@@ -2,13 +2,17 @@
 # Override anything from the CLI:
 #   make train trainer=cloud model.hidden_dim=256 seed=7
 
+# `_self_` placement matters. We put it BEFORE `experiment` so that an
+# experiment override wins over the values declared directly in this file.
+# Without this, `experiment=example` would silently fail to override the
+# base mlflow.experiment_name etc.
 defaults:
   - base_config
+  - _self_
   - data: default
   - model: mlp
   - trainer: local
   - experiment: null
-  - _self_
 
 seed: 42
 
