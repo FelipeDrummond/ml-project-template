@@ -98,6 +98,11 @@ class TrainerConfig:
     # `null` disables the SIGTERM upload — the local checkpoint still
     # exists, but is lost when the spot host is reclaimed.
     checkpoint_uri: str | None = None
+    # `fast_dev_run`: 1 train batch + 1 val batch + 1 checkpoint
+    # save→load round-trip, end-to-end. Catches model-wiring / shape /
+    # device / checkpoint-format bugs before you commit to a paid run.
+    # Forces epochs=1 and exits after the first batch of each phase.
+    fast_dev_run: bool = False
 
 
 @dataclass

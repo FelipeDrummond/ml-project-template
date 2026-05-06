@@ -52,14 +52,17 @@ def _evaluate(
     model: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     loss_fn: nn.Module,
+    max_batches: int | None = None,
 ) -> tuple[float, float]:
-    """Return (mean_loss, accuracy). Tensors are already on-device (Accelerator)."""
+    """Return (mean_loss, accuracy). `max_batches` truncates for fast_dev_run."""
     model.eval()
     total_loss = 0.0
     total_correct = 0
     total_seen = 0
     with torch.inference_mode():
-        for x, y in loader:
+        for i, (x, y) in enumerate(loader):
+            if max_batches is not None and i >= max_batches:
+                break
             logits = model(x)
             loss = loss_fn(logits, y)
             total_loss += loss.item() * x.shape[0]
@@ -77,16 +80,20 @@ def _train_one_epoch(
     loss_fn: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     starting_step: int,
+    max_batches: int | None = None,
 ) -> int:
     """Run one training epoch. Returns the new global_step counter.
 
     `step` counts micro-batches. With grad_accum_steps > 1, the optimizer
     steps once per N micro-batches; `accelerator.accumulate(model)` gates
     the actual backward sync + optim/scheduler step on the boundary.
+    `max_batches` truncates the loop for fast_dev_run.
     """
     model.train()
     step = starting_step
-    for x, y in loader:
+    for i, (x, y) in enumerate(loader):
+        if max_batches is not None and i >= max_batches:
+            break
         with accelerator.accumulate(model):
             logits = model(x)
             loss = loss_fn(logits, y)
@@ -278,15 +285,27 @@ def train(cfg: Config) -> dict[str, float]:
         cfg, accelerator, s.checkpoint_root.parent, last_state
     )
 
+    fdr = cfg.trainer.fast_dev_run
+    epochs = 1 if fdr else cfg.trainer.epochs
+    train_cap = max(1, cfg.trainer.grad_accum_steps) if fdr else None
+    val_cap = 1 if fdr else None
+    if fdr:
+        logger.warning(
+            "fast_dev_run: 1 epoch, %d train batch(es), %d val batch(es), "
+            "forced checkpoint + load round-trip.", train_cap, val_cap,
+        )
+
     with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx, sigterm_ctx:
         mlflow.log_params(_flatten_params(cfg))
         global_step = 0
-        for epoch in range(s.start_epoch, cfg.trainer.epochs):
+        for epoch in range(s.start_epoch, epochs):
             global_step = _train_one_epoch(
                 cfg, accelerator, s.model, s.optim, s.scheduler, s.loss_fn,
-                s.train_loader, global_step,
+                s.train_loader, global_step, max_batches=train_cap,
             )
-            val_loss, val_acc = _evaluate(s.model, s.val_loader, s.loss_fn)
+            val_loss, val_acc = _evaluate(
+                s.model, s.val_loader, s.loss_fn, max_batches=val_cap
+            )
             mlflow.log_metric("val/loss", val_loss, step=epoch)
             mlflow.log_metric("val/accuracy", val_acc, step=epoch)
             logger.info("epoch %d: val_loss=%.4f val_acc=%.4f", epoch, val_loss, val_acc)
@@ -309,8 +328,15 @@ def train(cfg: Config) -> dict[str, float]:
             last_state["step"] = global_step
             last_state["val_loss"] = val_loss
 
-            if (epoch + 1) % cfg.trainer.checkpoint_every_n_epochs == 0:
-                _save_and_maybe_upload(cfg, accelerator, s.checkpoint_root, ckpt_meta)
+            # fast_dev_run forces a save+load round-trip regardless of
+            # checkpoint_every_n_epochs; that's the bug it most often catches.
+            if fdr or (epoch + 1) % cfg.trainer.checkpoint_every_n_epochs == 0:
+                ckpt_path = _save_and_maybe_upload(
+                    cfg, accelerator, s.checkpoint_root, ckpt_meta
+                )
+                if fdr:
+                    load_checkpoint(accelerator, ckpt_path)
+                    logger.info("fast_dev_run: checkpoint round-trip OK.")
 
             # Cost controls run after the checkpoint, so an early exit
             # always leaves a fresh on-disk checkpoint to resume from.
@@ -329,9 +355,9 @@ def _save_and_maybe_upload(
     accelerator: Accelerator,
     checkpoint_root: Path,
     meta: CheckpointMeta,
-) -> None:
+) -> Path:
     """Save the periodic checkpoint, prune to top-K, and (if configured)
-    mirror the latest one to the spot-survival URI."""
+    mirror the latest one to the spot-survival URI. Returns the local path."""
     ckpt_path = checkpoint_root / f"epoch_{meta.epoch:04d}"
     save_checkpoint(accelerator, ckpt_path, meta)
     prune_top_k(checkpoint_root, cfg.trainer.keep_top_k_checkpoints)
@@ -341,6 +367,7 @@ def _save_and_maybe_upload(
             upload_checkpoint(ckpt_path, cfg.trainer.checkpoint_uri)
         except Exception:
             logger.exception("Periodic checkpoint upload failed.")
+    return ckpt_path
 
 
 def _build_sigterm_ctx(

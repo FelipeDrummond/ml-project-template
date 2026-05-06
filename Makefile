@@ -32,6 +32,9 @@ test: ## pytest (excluding gpu-marked tests)
 smoke: ## one-batch overfit — must drive loss → ~0
 	uv run python scripts/overfit_one_batch.py
 
+dev-run: ## fast_dev_run end-to-end (1 train batch + 1 val batch + ckpt round-trip)
+	uv run python -m ml_template.cli.train trainer.fast_dev_run=true trainer.device=cpu
+
 train: ## launch training (overrides: make train OVERRIDES="trainer=cloud model.hidden_dim=256")
 	uv run python -m ml_template.cli.train $(OVERRIDES)
 
