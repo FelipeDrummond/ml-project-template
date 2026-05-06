@@ -24,6 +24,11 @@ from ml_template.training.checkpoint import (
     prune_top_k,
     save_checkpoint,
 )
+from ml_template.training.spot import (
+    install_sigterm_handler,
+    maybe_resolve_remote_resume,
+    upload_checkpoint,
+)
 from ml_template.utils import (
     assert_finite_loss,
     enable_tf32,
@@ -176,7 +181,10 @@ def _setup(cfg: Config) -> _TrainState:
     start_epoch = 0
     best_meta: CheckpointMeta | None = None
     if cfg.trainer.resume_from is not None:
-        meta = load_checkpoint(accelerator, Path(cfg.trainer.resume_from))
+        # `resume_from` may be a local path or a remote fsspec URI
+        # (s3://, gs://...). Remote URIs are mirrored locally first.
+        resume_path = maybe_resolve_remote_resume(cfg.trainer.resume_from)
+        meta = load_checkpoint(accelerator, resume_path)
         start_epoch = meta.epoch + 1
         best_meta = meta
 
@@ -197,16 +205,9 @@ def train(cfg: Config) -> dict[str, float]:
     """Run training end-to-end. Returns final metrics for tests/callers."""
     set_seed(cfg.seed)
     enable_tf32(cfg.trainer.tf32)
-    state = _setup(cfg)
-    accelerator = state.accelerator
-    model = state.model
-    optim = state.optim
-    loss_fn = state.loss_fn
-    train_loader = state.train_loader
-    val_loader = state.val_loader
-    checkpoint_root = state.checkpoint_root
-    start_epoch = state.start_epoch
-    best_meta = state.best_meta
+    s = _setup(cfg)
+    accelerator = s.accelerator  # used in many places below; alias once
+    best_meta = s.best_meta
 
     mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
     mlflow.set_experiment(cfg.mlflow.experiment_name)
@@ -220,14 +221,27 @@ def train(cfg: Config) -> dict[str, float]:
     final_metrics: dict[str, float] = {}
     epochs_since_improvement = 0
     train_start = time.monotonic()
-    with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx:
+
+    # Mutable container shared with the SIGTERM handler so it can take a
+    # checkpoint of the *current* state when the spot box is reclaimed.
+    last_state: dict[str, object] = {
+        "epoch": s.start_epoch,
+        "step": 0,
+        "val_loss": float("inf"),
+    }
+    sigterm_ctx = _build_sigterm_ctx(
+        cfg, accelerator, s.checkpoint_root.parent, last_state
+    )
+
+    with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx, sigterm_ctx:
         mlflow.log_params(_flatten_params(cfg))
         global_step = 0
-        for epoch in range(start_epoch, cfg.trainer.epochs):
+        for epoch in range(s.start_epoch, cfg.trainer.epochs):
             global_step = _train_one_epoch(
-                cfg, accelerator, model, optim, loss_fn, train_loader, global_step
+                cfg, accelerator, s.model, s.optim, s.loss_fn,
+                s.train_loader, global_step,
             )
-            val_loss, val_acc = _evaluate(model, val_loader, loss_fn)
+            val_loss, val_acc = _evaluate(s.model, s.val_loader, s.loss_fn)
             mlflow.log_metric("val/loss", val_loss, step=epoch)
             mlflow.log_metric("val/accuracy", val_acc, step=epoch)
             logger.info("epoch %d: val_loss=%.4f val_acc=%.4f", epoch, val_loss, val_acc)
@@ -240,17 +254,18 @@ def train(cfg: Config) -> dict[str, float]:
                 metric_value=val_loss,
                 metric_mode=TRACKED_METRIC_MODE,
             )
-            improved = best_meta is None or ckpt_meta.is_better_than(best_meta)
-            if improved:
+            if best_meta is None or ckpt_meta.is_better_than(best_meta):
                 best_meta = ckpt_meta
                 epochs_since_improvement = 0
             else:
                 epochs_since_improvement += 1
 
+            last_state["epoch"] = epoch
+            last_state["step"] = global_step
+            last_state["val_loss"] = val_loss
+
             if (epoch + 1) % cfg.trainer.checkpoint_every_n_epochs == 0:
-                ckpt_path = checkpoint_root / f"epoch_{epoch:04d}"
-                save_checkpoint(accelerator, ckpt_path, ckpt_meta)
-                prune_top_k(checkpoint_root, cfg.trainer.keep_top_k_checkpoints)
+                _save_and_maybe_upload(cfg, accelerator, s.checkpoint_root, ckpt_meta)
 
             # Cost controls run after the checkpoint, so an early exit
             # always leaves a fresh on-disk checkpoint to resume from.
@@ -262,6 +277,51 @@ def train(cfg: Config) -> dict[str, float]:
                 break
 
     return final_metrics
+
+
+def _save_and_maybe_upload(
+    cfg: Config,
+    accelerator: Accelerator,
+    checkpoint_root: Path,
+    meta: CheckpointMeta,
+) -> None:
+    """Save the periodic checkpoint, prune to top-K, and (if configured)
+    mirror the latest one to the spot-survival URI."""
+    ckpt_path = checkpoint_root / f"epoch_{meta.epoch:04d}"
+    save_checkpoint(accelerator, ckpt_path, meta)
+    prune_top_k(checkpoint_root, cfg.trainer.keep_top_k_checkpoints)
+    if cfg.trainer.checkpoint_uri is not None:
+        # Best-effort: upload failures are logged but don't kill the run.
+        try:
+            upload_checkpoint(ckpt_path, cfg.trainer.checkpoint_uri)
+        except Exception:
+            logger.exception("Periodic checkpoint upload failed.")
+
+
+def _build_sigterm_ctx(
+    cfg: Config,
+    accelerator: Accelerator,
+    output_root: Path,
+    last_state: dict[str, object],
+):
+    """Return a context manager that installs the SIGTERM handler.
+
+    The handler reads `last_state` (mutated by the training loop each
+    epoch) so the checkpoint it writes reflects the most recent step.
+    """
+
+    def take_sigterm_checkpoint() -> CheckpointMeta:
+        return CheckpointMeta(
+            epoch=int(last_state["epoch"]),  # type: ignore[arg-type]
+            step=int(last_state["step"]),  # type: ignore[arg-type]
+            metric_name=TRACKED_METRIC_NAME,
+            metric_value=float(last_state["val_loss"]),  # type: ignore[arg-type]
+            metric_mode=TRACKED_METRIC_MODE,
+        )
+
+    return install_sigterm_handler(
+        accelerator, cfg.trainer.checkpoint_uri, take_sigterm_checkpoint, output_root
+    )
 
 
 def _should_stop(

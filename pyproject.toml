@@ -16,6 +16,7 @@ dependencies = [
     "rich>=13.7",
     "tqdm>=4.66",
     "accelerate>=1.0,<2",
+    "fsspec>=2024.9",
 ]
 
 # Torch is declared in extras so uv can route the wheel index per platform.
@@ -41,6 +42,10 @@ dev = [
     "pre-commit>=3.7",
     "ipykernel>=6.29",
 ]
+# Cloud storage backends — pick the one that matches your spot host.
+# Either is reachable through the same `CHECKPOINT_URI` env var.
+s3 = ["s3fs>=2024.9"]
+gcs = ["gcsfs>=2024.9"]
 
 [project.scripts]
 ml-train = "ml_template.cli.train:main"

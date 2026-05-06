@@ -76,6 +76,12 @@ class TrainerConfig:
     # Hard wall-clock budget. Run exits cleanly (after saving the current
     # checkpoint) once exceeded. Useful for capping spot-instance spend.
     max_wall_seconds: int | None = None
+    # Spot interruption: where to upload the latest checkpoint when the
+    # process catches SIGTERM (AWS gives 2 min, GCP 30s before the box
+    # disappears). fsspec URI: `s3://...`, `gs://...`, `file://...`.
+    # `null` disables the SIGTERM upload — the local checkpoint still
+    # exists, but is lost when the spot host is reclaimed.
+    checkpoint_uri: str | None = None
 
 
 @dataclass

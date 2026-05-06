@@ -130,6 +130,27 @@ and bypasses struct mode. Use it consciously when adding a field; never use
 4. Create `configs/scheduler/<variant>.yaml` files.
 5. Reference the group in `configs/config.yaml` `defaults:` list.
 
+## Cost controls and spot survival
+
+The training loop ships with several knobs aimed at keeping cloud GPU
+spend bounded:
+
+- `trainer.precision` — `"bf16"` on Ampere+ for ~2x speedup
+- `trainer.tf32` — free ~30% speedup for fp32 ops outside autocast
+- `trainer.compile_mode` — opt-in `torch.compile` (CUDA-only)
+- `trainer.early_stop_patience` — quit when val/loss plateaus
+- `trainer.max_wall_seconds` — hard wall-clock budget
+- `trainer.grad_clip_max_norm` — regularization, not a NaN guard (NaN guard is separate)
+- `trainer.checkpoint_uri` — fsspec URI (`s3://`, `gs://`, `file://`) where
+  every periodic + SIGTERM checkpoint is mirrored. Survives spot reclaim.
+  Set via env var: `CHECKPOINT_URI=...` then `trainer.checkpoint_uri=$CHECKPOINT_URI`.
+- `trainer.resume_from` accepts both local paths and fsspec URIs.
+
+The SIGTERM handler always runs (regardless of `checkpoint_uri`); it
+saves a last-gasp checkpoint locally and uploads to the URI if set.
+AWS spot gives 2 min, GCP 30s — uploads are best-effort with timeout
+falling through to local.
+
 ## What NOT to touch without asking
 
 These have out-of-repo consequences. Stop and confirm with the user before
