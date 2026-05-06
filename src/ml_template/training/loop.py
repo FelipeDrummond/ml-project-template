@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import nullcontext
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -54,6 +55,35 @@ def _evaluate(
             total_correct += int((logits.argmax(dim=-1) == y).sum().item())
             total_seen += x.shape[0]
     return total_loss / max(total_seen, 1), total_correct / max(total_seen, 1)
+
+
+def _train_one_epoch(
+    cfg: Config,
+    accelerator: Accelerator,
+    model: nn.Module,
+    optim: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    starting_step: int,
+) -> int:
+    """Run one training epoch. Returns the new global_step counter."""
+    model.train()
+    step = starting_step
+    for x, y in loader:
+        logits = model(x)
+        loss = loss_fn(logits, y)
+        assert_finite_loss(loss, step)
+        optim.zero_grad(set_to_none=True)
+        accelerator.backward(loss)
+        if cfg.trainer.grad_clip_max_norm is not None:
+            accelerator.clip_grad_norm_(
+                model.parameters(), cfg.trainer.grad_clip_max_norm
+            )
+        optim.step()
+        if step % cfg.trainer.log_every_n_steps == 0:
+            mlflow.log_metric("train/loss", loss.item(), step=step)
+        step += 1
+    return step
 
 
 def _build_accelerator(cfg: Config) -> Accelerator:
@@ -137,47 +167,85 @@ def train(cfg: Config) -> dict[str, float]:
     )
 
     final_metrics: dict[str, float] = {}
+    epochs_since_improvement = 0
+    train_start = time.monotonic()
     with mlflow.start_run(run_name=cfg.mlflow.run_name), anomaly_ctx:
         mlflow.log_params(_flatten_params(cfg))
         global_step = 0
         for epoch in range(start_epoch, cfg.trainer.epochs):
-            model.train()
-            for x, y in train_loader:
-                logits = model(x)
-                loss = loss_fn(logits, y)
-                assert_finite_loss(loss, global_step)
-                optim.zero_grad(set_to_none=True)
-                accelerator.backward(loss)
-                if cfg.trainer.grad_clip_max_norm is not None:
-                    accelerator.clip_grad_norm_(
-                        model.parameters(), cfg.trainer.grad_clip_max_norm
-                    )
-                optim.step()
-                if global_step % cfg.trainer.log_every_n_steps == 0:
-                    mlflow.log_metric("train/loss", loss.item(), step=global_step)
-                global_step += 1
-
+            global_step = _train_one_epoch(
+                cfg, accelerator, model, optim, loss_fn, train_loader, global_step
+            )
             val_loss, val_acc = _evaluate(model, val_loader, loss_fn)
             mlflow.log_metric("val/loss", val_loss, step=epoch)
             mlflow.log_metric("val/accuracy", val_acc, step=epoch)
             logger.info("epoch %d: val_loss=%.4f val_acc=%.4f", epoch, val_loss, val_acc)
             final_metrics = {"val/loss": val_loss, "val/accuracy": val_acc}
 
+            ckpt_meta = CheckpointMeta(
+                epoch=epoch,
+                step=global_step,
+                metric_name=TRACKED_METRIC_NAME,
+                metric_value=val_loss,
+                metric_mode=TRACKED_METRIC_MODE,
+            )
+            improved = best_meta is None or ckpt_meta.is_better_than(best_meta)
+            if improved:
+                best_meta = ckpt_meta
+                epochs_since_improvement = 0
+            else:
+                epochs_since_improvement += 1
+
             if (epoch + 1) % cfg.trainer.checkpoint_every_n_epochs == 0:
-                ckpt_meta = CheckpointMeta(
-                    epoch=epoch,
-                    step=global_step,
-                    metric_name=TRACKED_METRIC_NAME,
-                    metric_value=val_loss,
-                    metric_mode=TRACKED_METRIC_MODE,
-                )
                 ckpt_path = checkpoint_root / f"epoch_{epoch:04d}"
                 save_checkpoint(accelerator, ckpt_path, ckpt_meta)
-                if best_meta is None or ckpt_meta.is_better_than(best_meta):
-                    best_meta = ckpt_meta
                 prune_top_k(checkpoint_root, cfg.trainer.keep_top_k_checkpoints)
 
+            # Cost controls run after the checkpoint, so an early exit
+            # always leaves a fresh on-disk checkpoint to resume from.
+            stop_reason = _should_stop(
+                cfg, epoch, epochs_since_improvement, train_start
+            )
+            if stop_reason is not None:
+                final_metrics[stop_reason[0]] = stop_reason[1]
+                break
+
     return final_metrics
+
+
+def _should_stop(
+    cfg: Config,
+    epoch: int,
+    epochs_since_improvement: int,
+    train_start: float,
+) -> tuple[str, float] | None:
+    """Decide whether to exit the training loop after this epoch.
+
+    Returns a (metric_key, metric_value) pair to record in `final_metrics`,
+    or `None` to continue training.
+    """
+    if (
+        cfg.trainer.early_stop_patience is not None
+        and epochs_since_improvement >= cfg.trainer.early_stop_patience
+    ):
+        logger.info(
+            "Early stopping at epoch %d: %s has not improved for %d epochs.",
+            epoch, TRACKED_METRIC_NAME, epochs_since_improvement,
+        )
+        return ("stopped_at_epoch", float(epoch))
+
+    elapsed = time.monotonic() - train_start
+    if (
+        cfg.trainer.max_wall_seconds is not None
+        and elapsed >= cfg.trainer.max_wall_seconds
+    ):
+        logger.info(
+            "Wall-clock budget exhausted at epoch %d (%.1fs >= %ds). Exiting cleanly.",
+            epoch, elapsed, cfg.trainer.max_wall_seconds,
+        )
+        return ("wall_seconds", elapsed)
+
+    return None
 
 
 def _flatten_params(cfg: Config) -> dict[str, str]:

@@ -64,6 +64,12 @@ class TrainerConfig:
     # restores model, optimizer, and RNG state, then continues from the
     # next epoch. `null` starts from scratch.
     resume_from: str | None = None
+    # Cost controls — both null disables.
+    # Stop training when val/loss hasn't improved for N consecutive epochs.
+    early_stop_patience: int | None = None
+    # Hard wall-clock budget. Run exits cleanly (after saving the current
+    # checkpoint) once exceeded. Useful for capping spot-instance spend.
+    max_wall_seconds: int | None = None
 
 
 @dataclass
