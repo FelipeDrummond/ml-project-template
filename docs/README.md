@@ -6,6 +6,7 @@ static-site generator. Read by both humans and coding agents.
 ## Index
 
 - **[template_guide.md](template_guide.md)** — how this repo works as a template: every feature, configuration system, and per-project-type checklist of "first thing to change". Read this when instantiating the template for a new project.
+- **[followups.md](followups.md)** — known gaps in the template that aren't blockers but should be addressed eventually (real-CUDA verification, S3/GCS upload validation, CLAUDE.md path-table validator, etc.).
 - **[research_statement.md](research_statement.md)** — problem, hypothesis, success criteria, scope.
 - **[related_work.md](related_work.md)** — running lit notes with citations.
 - **[methods.md](methods.md)** — current architecture, loss, training procedure. References exact code paths; kept in sync with code (a pre-commit hook enforces path validity).
