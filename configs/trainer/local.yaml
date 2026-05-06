@@ -4,3 +4,7 @@ epochs: 2
 lr: 1.0e-3
 weight_decay: 0.0
 log_every_n_steps: 5
+# Perf knobs (mostly no-ops locally — TF32 only affects Ampere+ CUDA).
+tf32: true
+grad_clip_max_norm: 1.0
+detect_anomaly: false

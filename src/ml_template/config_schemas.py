@@ -19,7 +19,13 @@ class DataConfig:
     n_classes: int = 4
     batch_size: int = 32
     val_fraction: float = 0.2
-    num_workers: int = 0
+    # DataLoader workers + perf flags. `num_workers > 0` is gated on CUDA
+    # availability at use site: spawn-based workers on macOS often hurt
+    # throughput, so locally we run with workers=0 regardless.
+    num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
 
 
 @dataclass
@@ -38,6 +44,14 @@ class TrainerConfig:
     lr: float = 1e-3
     weight_decay: float = 0.0
     log_every_n_steps: int = 10
+    # Perf knobs (Tier 1).
+    tf32: bool = True
+    # Gradient clipping is regularization / training-stability, not a NaN
+    # guard (those are separate). `null` disables clipping.
+    grad_clip_max_norm: float | None = 1.0
+    # Dev-only: torch.autograd.set_detect_anomaly is very slow; enable to
+    # locate the op producing NaN/Inf, then turn off.
+    detect_anomaly: bool = False
 
 
 @dataclass
