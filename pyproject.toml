@@ -17,6 +17,9 @@ dependencies = [
     "tqdm>=4.66",
     "accelerate>=1.0,<2",
     "fsspec>=2024.9",
+    # nvidia-ml-py is pure Python; install always succeeds. Runtime
+    # nvmlInit() fails gracefully on non-NVIDIA hosts (we wrap it).
+    "nvidia-ml-py>=12",
 ]
 
 # Torch is declared in extras so uv can route the wheel index per platform.

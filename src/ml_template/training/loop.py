@@ -37,6 +37,8 @@ from ml_template.training.spot import (
 from ml_template.utils import (
     assert_finite_loss,
     enable_tf32,
+    gpu_memory_snapshot,
+    reset_peak_memory_stats,
     set_seed,
 )
 
@@ -81,17 +83,28 @@ def _train_one_epoch(
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     starting_step: int,
     max_batches: int | None = None,
-) -> int:
-    """Run one training epoch. Returns the new global_step counter.
+) -> tuple[int, int, float, float]:
+    """Run one training epoch. Returns (new_step, samples_seen, data_wait_s, compute_s).
 
     `step` counts micro-batches. With grad_accum_steps > 1, the optimizer
     steps once per N micro-batches; `accelerator.accumulate(model)` gates
     the actual backward sync + optim/scheduler step on the boundary.
     `max_batches` truncates the loop for fast_dev_run.
+
+    Timing semantics: `data_wait_s` is wall time from the end of the
+    previous compute block to the start of the next iteration's compute —
+    i.e. how long the main thread blocked on the dataloader. High % here
+    means more workers / pin_memory / smaller per-sample preprocessing.
     """
     model.train()
     step = starting_step
+    samples_seen = 0
+    data_wait_s = 0.0
+    compute_s = 0.0
+    last_t = time.perf_counter()
     for i, (x, y) in enumerate(loader):
+        now = time.perf_counter()
+        data_wait_s += now - last_t
         if max_batches is not None and i >= max_batches:
             break
         with accelerator.accumulate(model):
@@ -107,11 +120,14 @@ def _train_one_epoch(
             if scheduler is not None:
                 scheduler.step()
             optim.zero_grad(set_to_none=True)
+        last_t = time.perf_counter()
+        compute_s += last_t - now
+        samples_seen += x.shape[0]
         if step % cfg.trainer.log_every_n_steps == 0:
             mlflow.log_metric("train/loss", loss.item(), step=step)
             mlflow.log_metric("train/lr", current_lr(optim), step=step)
         step += 1
-    return step
+    return step, samples_seen, data_wait_s, compute_s
 
 
 def _build_accelerator(cfg: Config) -> Accelerator:
@@ -299,7 +315,8 @@ def train(cfg: Config) -> dict[str, float]:
         mlflow.log_params(_flatten_params(cfg))
         global_step = 0
         for epoch in range(s.start_epoch, epochs):
-            global_step = _train_one_epoch(
+            reset_peak_memory_stats()
+            global_step, samples_seen, data_wait_s, compute_s = _train_one_epoch(
                 cfg, accelerator, s.model, s.optim, s.scheduler, s.loss_fn,
                 s.train_loader, global_step, max_batches=train_cap,
             )
@@ -308,6 +325,7 @@ def train(cfg: Config) -> dict[str, float]:
             )
             mlflow.log_metric("val/loss", val_loss, step=epoch)
             mlflow.log_metric("val/accuracy", val_acc, step=epoch)
+            _log_epoch_perf(epoch, samples_seen, data_wait_s, compute_s)
             logger.info("epoch %d: val_loss=%.4f val_acc=%.4f", epoch, val_loss, val_acc)
             final_metrics = {"val/loss": val_loss, "val/accuracy": val_acc}
 
@@ -348,6 +366,26 @@ def train(cfg: Config) -> dict[str, float]:
                 break
 
     return final_metrics
+
+
+def _log_epoch_perf(
+    epoch: int, samples_seen: int, data_wait_s: float, compute_s: float
+) -> None:
+    """Log throughput, dataloader-wait %, and GPU memory/util to MLflow.
+
+    `data_wait_pct` is the headline cost-of-IO number — over ~20% means
+    the dataloader is the bottleneck (more workers / pin_memory / smaller
+    per-sample preprocessing).
+    """
+    total = data_wait_s + compute_s
+    if total > 0:
+        mlflow.log_metric("perf/samples_per_sec", samples_seen / total, step=epoch)
+        mlflow.log_metric(
+            "perf/dataloader_wait_pct", 100.0 * data_wait_s / total, step=epoch
+        )
+        mlflow.log_metric("perf/epoch_seconds", total, step=epoch)
+    for name, value in gpu_memory_snapshot().items():
+        mlflow.log_metric(name, value, step=epoch)
 
 
 def _save_and_maybe_upload(

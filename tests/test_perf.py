@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import mlflow
 import pytest
 import torch
 
@@ -24,6 +25,8 @@ from ml_template.training import train
 from ml_template.utils.perf import (
     assert_finite_loss,
     enable_tf32,
+    gpu_memory_snapshot,
+    reset_peak_memory_stats,
     use_fused_adamw,
 )
 
@@ -55,6 +58,52 @@ def test_assert_finite_loss_raises_on_nan() -> None:
 def test_assert_finite_loss_raises_on_inf() -> None:
     with pytest.raises(RuntimeError, match="non-finite"):
         assert_finite_loss(torch.tensor(float("inf")), step=42)
+
+
+def test_gpu_memory_snapshot_empty_off_cuda() -> None:
+    """Empty dict on non-CUDA hosts (the test happy-path on Mac/CI)."""
+    if torch.cuda.is_available():
+        pytest.skip("This test pins the non-CUDA fallback.")
+    assert gpu_memory_snapshot() == {}
+
+
+def test_reset_peak_memory_stats_no_op_off_cuda() -> None:
+    """Must not raise on non-CUDA hosts."""
+    if torch.cuda.is_available():
+        pytest.skip("This test pins the non-CUDA fallback.")
+    reset_peak_memory_stats()  # would crash if unguarded
+
+
+def test_perf_metrics_logged_to_mlflow(tmp_path: Path) -> None:
+    """Run a short training and assert the perf metrics make it into the
+    MLflow file store."""
+    cfg = Config(
+        seed=0,
+        output_dir=str(tmp_path / "run"),
+        data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
+        model=ModelConfig(hidden_dim=8, n_layers=1),
+        trainer=TrainerConfig(
+            device="cpu", epochs=1, lr=1e-3, grad_clip_max_norm=None
+        ),
+        mlflow=MLflowConfig(
+            tracking_uri=f"file:{tmp_path / 'mlruns'}",
+            experiment_name="perf_metrics",
+        ),
+    )
+    train(cfg)
+
+    client = mlflow.MlflowClient(tracking_uri=cfg.mlflow.tracking_uri)
+    experiment = client.get_experiment_by_name("perf_metrics")
+    assert experiment is not None
+    runs = client.search_runs([experiment.experiment_id])
+    assert len(runs) == 1
+    metrics = runs[0].data.metrics
+    assert "perf/samples_per_sec" in metrics
+    assert metrics["perf/samples_per_sec"] > 0
+    assert "perf/dataloader_wait_pct" in metrics
+    assert 0.0 <= metrics["perf/dataloader_wait_pct"] <= 100.0
+    assert "perf/epoch_seconds" in metrics
+    assert metrics["perf/epoch_seconds"] > 0
 
 
 def test_dataloader_workers_gated_off_without_cuda() -> None:

@@ -99,7 +99,7 @@ def test_fast_dev_run_round_trip_catches_format_drift(
 def test_fast_dev_run_runs_quickly(tmp_path: Path) -> None:
     """With `epochs=1000` the run still finishes in well under a minute,
     proving the truncation is real (not just a default-epochs accident)."""
-    cfg = _make_cfg(tmp_path, epochs=1000)  # type: ignore[arg-type]
+    cfg = _make_cfg(tmp_path, epochs=1000)
     start = time.monotonic()
     train(cfg)
     elapsed = time.monotonic() - start
