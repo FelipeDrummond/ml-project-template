@@ -11,6 +11,11 @@ detect_anomaly: false
 # bf16 autocast — assumes Ampere+ (3090, 4090, A100, H100). Switch to
 # "fp16" if you ever rent V100 / T4 / 2080Ti.
 precision: bf16
+# torch.compile is CUDA-only. Leave null until you benchmark — first call
+# is slow (compilation cost) and graph breaks can shadow real bugs.
+# Set to "default" / "reduce-overhead" / "max-autotune" once you've
+# verified the run is correct without it.
+compile_mode: null
 # Checkpoint policy.
 checkpoint_every_n_epochs: 1
 keep_top_k_checkpoints: 3

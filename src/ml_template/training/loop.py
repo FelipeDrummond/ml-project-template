@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import nullcontext
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
+from typing import cast
 
 import mlflow
 import torch
@@ -115,17 +116,27 @@ def _resolve_output_dir(cfg: Config) -> Path:
     return Path(cfg.output_dir) / "checkpoints"
 
 
-def train(cfg: Config) -> dict[str, float]:
-    """Run training end-to-end. Returns final metrics for tests/callers."""
-    set_seed(cfg.seed)
-    enable_tf32(cfg.trainer.tf32)
+@dataclass
+class _TrainState:
+    accelerator: Accelerator
+    model: nn.Module
+    optim: torch.optim.Optimizer
+    loss_fn: nn.Module
+    train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
+    val_loader: DataLoader[tuple[torch.Tensor, torch.Tensor]]
+    checkpoint_root: Path
+    start_epoch: int
+    best_meta: CheckpointMeta | None
 
+
+def _setup(cfg: Config) -> _TrainState:
+    """Build everything the training loop needs: accelerator, model+optim
+    (prepared and optionally compiled), dataloaders, and resume state."""
     accelerator = _build_accelerator(cfg)
     logger.info("Accelerator device: %s, precision: %s",
                 accelerator.device, accelerator.mixed_precision)
 
     train_loader, val_loader = build_dataloaders(cfg.data, seed=cfg.seed)
-
     model = MLP(
         in_features=cfg.data.n_features,
         out_features=cfg.data.n_classes,
@@ -133,13 +144,11 @@ def train(cfg: Config) -> dict[str, float]:
         n_layers=cfg.model.n_layers,
         dropout=cfg.model.dropout,
     )
-
     optim = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.trainer.lr,
         weight_decay=cfg.trainer.weight_decay,
-        # Accelerator places params on the right device before optim.step;
-        # `fused=True` is safe iff CUDA is the backend at that point.
+        # `fused=True` is safe iff CUDA is the backend at optim.step.
         fused=accelerator.device.type == "cuda",
     )
     loss_fn = nn.CrossEntropyLoss()
@@ -148,14 +157,56 @@ def train(cfg: Config) -> dict[str, float]:
         model, optim, train_loader, val_loader
     )
 
-    checkpoint_root = _resolve_output_dir(cfg)
+    # torch.compile is CUDA-only. Silently skip with a warning elsewhere
+    # to avoid compile overhead with no payoff.
+    if cfg.trainer.compile_mode is not None:
+        if accelerator.device.type == "cuda":
+            logger.info("Compiling model with torch.compile(mode=%r)",
+                        cfg.trainer.compile_mode)
+            # torch.compile returns OptimizedModule (an nn.Module subclass)
+            # but pyright stubs type it as Callable; cast back so downstream
+            # code remains nn.Module-typed.
+            model = cast(nn.Module, torch.compile(model, mode=cfg.trainer.compile_mode))
+        else:
+            logger.warning(
+                "compile_mode=%r requested but device is %s; skipping torch.compile.",
+                cfg.trainer.compile_mode, accelerator.device.type,
+            )
+
     start_epoch = 0
     best_meta: CheckpointMeta | None = None
-
     if cfg.trainer.resume_from is not None:
         meta = load_checkpoint(accelerator, Path(cfg.trainer.resume_from))
         start_epoch = meta.epoch + 1
         best_meta = meta
+
+    return _TrainState(
+        accelerator=accelerator,
+        model=model,
+        optim=optim,
+        loss_fn=loss_fn,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        checkpoint_root=_resolve_output_dir(cfg),
+        start_epoch=start_epoch,
+        best_meta=best_meta,
+    )
+
+
+def train(cfg: Config) -> dict[str, float]:
+    """Run training end-to-end. Returns final metrics for tests/callers."""
+    set_seed(cfg.seed)
+    enable_tf32(cfg.trainer.tf32)
+    state = _setup(cfg)
+    accelerator = state.accelerator
+    model = state.model
+    optim = state.optim
+    loss_fn = state.loss_fn
+    train_loader = state.train_loader
+    val_loader = state.val_loader
+    checkpoint_root = state.checkpoint_root
+    start_epoch = state.start_epoch
+    best_meta = state.best_meta
 
     mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
     mlflow.set_experiment(cfg.mlflow.experiment_name)

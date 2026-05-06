@@ -57,6 +57,12 @@ class TrainerConfig:
     # Default is "no" so local dev (Mac MPS / CPU) doesn't autocast.
     # Use "bf16" on Ampere+ cloud GPUs.
     precision: str = "no"
+    # torch.compile flag. CUDA-only (silently disabled elsewhere). Mode:
+    # "default" | "reduce-overhead" | "max-autotune". `null` disables.
+    # First call is slow (compilation); subsequent steps are 30-100%
+    # faster on most workloads. Worth a flag, opt-in by default since
+    # compile can shadow real bugs (e.g. graph breaks at NaN).
+    compile_mode: str | None = None
     # Checkpointing.
     checkpoint_every_n_epochs: int = 1
     keep_top_k_checkpoints: int = 3

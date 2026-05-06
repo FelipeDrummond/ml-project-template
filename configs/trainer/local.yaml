@@ -10,6 +10,8 @@ grad_clip_max_norm: 1.0
 detect_anomaly: false
 # No autocast locally — MPS doesn't autocast cleanly, CPU doesn't benefit.
 precision: "no"
+# torch.compile is CUDA-only; it would silently no-op locally anyway.
+compile_mode: null
 # Light checkpoint policy for local — short runs, keep 1.
 checkpoint_every_n_epochs: 1
 keep_top_k_checkpoints: 1

@@ -6,6 +6,7 @@ clear, isolated failure.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,34 @@ def test_dataloader_workers_gated_off_without_cuda() -> None:
     train_loader, _ = build_dataloaders(cfg, seed=0)
     assert train_loader.num_workers == 0
     assert train_loader.pin_memory is False
+
+
+def test_compile_mode_silently_skipped_on_non_cuda(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`compile_mode` is CUDA-only. On Mac/CPU it must log a warning and
+    skip rather than crashing or silently slowing training."""
+    if torch.cuda.is_available():
+        pytest.skip("This test pins the non-CUDA fallback behavior.")
+
+    caplog.set_level(logging.WARNING, logger="ml_template.training.loop")
+    cfg = Config(
+        seed=0,
+        output_dir=str(tmp_path / "run"),
+        data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
+        model=ModelConfig(hidden_dim=8, n_layers=1),
+        trainer=TrainerConfig(
+            device="cpu", epochs=1, lr=1e-3, compile_mode="default"
+        ),
+        mlflow=MLflowConfig(
+            tracking_uri=f"file:{tmp_path / 'mlruns'}",
+            experiment_name="test_compile_skip",
+        ),
+    )
+    train(cfg)
+    assert any(
+        "skipping torch.compile" in record.message for record in caplog.records
+    ), [r.message for r in caplog.records]
 
 
 def test_grad_clip_can_be_disabled(tmp_path: Path) -> None:
