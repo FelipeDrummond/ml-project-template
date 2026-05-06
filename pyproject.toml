@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.7,<3",
     "rich>=13.7",
     "tqdm>=4.66",
+    "accelerate>=1.0,<2",
 ]
 
 # Torch is declared in extras so uv can route the wheel index per platform.

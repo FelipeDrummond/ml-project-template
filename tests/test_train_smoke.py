@@ -22,6 +22,7 @@ def test_training_smoke_drives_val_loss_down() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(
             seed=0,
+            output_dir=str(Path(tmp) / "run"),
             data=DataConfig(n_samples=128, n_features=8, n_classes=3, batch_size=16),
             model=ModelConfig(hidden_dim=32, n_layers=2),
             trainer=TrainerConfig(device="cpu", epochs=10, lr=5e-3),

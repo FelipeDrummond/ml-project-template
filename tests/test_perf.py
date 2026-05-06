@@ -80,6 +80,7 @@ def test_grad_clip_can_be_disabled(tmp_path: Path) -> None:
     """`grad_clip_max_norm=null` must run without clipping (no crash)."""
     cfg = Config(
         seed=0,
+        output_dir=str(tmp_path / "run"),
         data=DataConfig(n_samples=64, n_features=4, n_classes=2, batch_size=8),
         model=ModelConfig(hidden_dim=8, n_layers=1),
         trainer=TrainerConfig(

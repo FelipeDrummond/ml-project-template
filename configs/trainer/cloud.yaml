@@ -8,3 +8,10 @@ log_every_n_steps: 50
 tf32: true
 grad_clip_max_norm: 1.0
 detect_anomaly: false
+# bf16 autocast — assumes Ampere+ (3090, 4090, A100, H100). Switch to
+# "fp16" if you ever rent V100 / T4 / 2080Ti.
+precision: bf16
+# Checkpoint policy.
+checkpoint_every_n_epochs: 1
+keep_top_k_checkpoints: 3
+resume_from: null

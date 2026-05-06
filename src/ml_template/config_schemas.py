@@ -37,8 +37,9 @@ class ModelConfig:
 
 @dataclass
 class TrainerConfig:
-    # device: one of "auto" | "cuda" | "mps" | "cpu". Validated at runtime by
-    # `resolve_device` (OmegaConf structured configs don't fully support Literal).
+    # device: one of "auto" | "cuda" | "mps" | "cpu". `cpu` is a hard
+    # override (passed as `cpu=True` to Accelerator); the others let
+    # Accelerate auto-detect (CUDA > MPS > CPU). Validated at use site.
     device: str = "auto"
     epochs: int = 5
     lr: float = 1e-3
@@ -52,6 +53,17 @@ class TrainerConfig:
     # Dev-only: torch.autograd.set_detect_anomaly is very slow; enable to
     # locate the op producing NaN/Inf, then turn off.
     detect_anomaly: bool = False
+    # Mixed precision via Accelerate: "no" | "fp16" | "bf16" | "fp8".
+    # Default is "no" so local dev (Mac MPS / CPU) doesn't autocast.
+    # Use "bf16" on Ampere+ cloud GPUs.
+    precision: str = "no"
+    # Checkpointing.
+    checkpoint_every_n_epochs: int = 1
+    keep_top_k_checkpoints: int = 3
+    # Path to a checkpoint directory to resume from. When set, training
+    # restores model, optimizer, and RNG state, then continues from the
+    # next epoch. `null` starts from scratch.
+    resume_from: str | None = None
 
 
 @dataclass
@@ -64,6 +76,10 @@ class MLflowConfig:
 @dataclass
 class Config:
     seed: int = 42
+    # Hydra populates this from `HydraConfig.get().runtime.output_dir` in
+    # cli/train.py — used as the root for checkpoints. Tests pass an
+    # explicit path.
+    output_dir: str | None = None
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
