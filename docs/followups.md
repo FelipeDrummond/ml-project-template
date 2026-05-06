@@ -92,7 +92,70 @@ Repeat for `gs://` if you'll use GCP.
 
 ---
 
-## 4. Add a CLAUDE.md path-table validator
+## 4. Add local tests for the SIGTERM-handler code path
+
+**Status**: `tests/test_spot.py` covers `upload_checkpoint`,
+`maybe_resolve_remote_resume`, and end-to-end *periodic* upload + remote
+resume. The actual `install_sigterm_handler` context manager is never
+exercised — every line inside the signal handler is untested in CI.
+
+**What's at risk**: the spot-survival promise. If the handler regresses
+(wrong exit code, missed upload, swallowed exception bubbles up,
+previous-handler not restored), nothing catches it before a real spot
+reclaim does. Item #3 covers this manually on a cloud box, but a
+regression should fail locally before it ships.
+
+**Tests to add** (all use `file://` URIs and
+`os.kill(os.getpid(), signal.SIGTERM)` — no cloud needed):
+
+1. **`test_sigterm_handler_saves_local_checkpoint_no_uri`** — install the
+   handler with a stub `take_checkpoint` returning a known meta and
+   `checkpoint_uri=None`. `os.kill` self with SIGTERM. Assert:
+   `SystemExit` raised with code 143; `<output_root>/sigterm_ckpt/checkpoint_meta.json`
+   exists; meta round-trips correctly.
+
+2. **`test_sigterm_handler_uploads_to_file_uri`** — same setup with
+   `checkpoint_uri=file://<tmp>/remote`. Assert: remote dir exists with
+   `checkpoint_meta.json`, local `sigterm_ckpt` exists, `SystemExit(143)`.
+
+3. **`test_sigterm_handler_survives_failed_upload`** — pass a URI that
+   `fsspec` will reject (e.g. an unregistered scheme `bogus://x/y` or a
+   `file://` pointing at a path the test makes read-only). Assert: local
+   `sigterm_ckpt` still on disk; the upload exception was logged via
+   `caplog` but not re-raised; `SystemExit(143)` still propagates.
+
+4. **`test_sigterm_handler_restores_previous_handler`** — set a custom
+   handler with `signal.signal(SIGTERM, custom)` before entering the
+   `with`, exit the block normally (no SIGTERM), assert
+   `signal.getsignal(SIGTERM) is custom` after. Pins the `try/finally`
+   contract in `install_sigterm_handler`.
+
+5. **`test_sigterm_during_training_then_resume`** — interrupt a real
+   `train()` mid-run by monkeypatching a hook the loop calls per step
+   (e.g. `mlflow.log_metric`) to call `os.kill(os.getpid(), SIGTERM)`
+   after the Nth invocation. Catch `SystemExit`, assert
+   `<output_root>/sigterm_ckpt` exists, then start a fresh `train()`
+   with `resume_from=<output_root>/sigterm_ckpt` and assert it advances
+   `start_epoch` and produces final metrics. This is the only test that
+   exercises the *full* reclaim cycle (handler fires → checkpoint
+   written → next process resumes from it).
+
+**Acceptance**: all five new tests pass on Mac/CPU; they live in
+`tests/test_spot.py` next to the existing ones; none require cloud
+credentials. With these in place, item #3 narrows to "verify the cloud
+backends behave like `file://`," not "verify the handler is correct."
+
+**Stretch** (nice-to-have, may be flaky): an equivalence test that
+runs N epochs uninterrupted, then K epochs + SIGTERM-resume + (N-K)
+epochs, and asserts the two final `val/loss` values match within
+tolerance on CPU + fixed seed. Catches RNG-state-not-preserved
+regressions in `Accelerator.save_state`. Skip if it proves
+non-deterministic in practice — Accelerate's RNG capture is supposed
+to make this work but the equivalence is empirical, not guaranteed.
+
+---
+
+## 5. Add a CLAUDE.md path-table validator
 
 **Status**: missing. The `Where things live` table in `CLAUDE.md`
 references many paths (`src/ml_template/training/loop.py`,
@@ -123,7 +186,7 @@ causes `pre-commit run --all-files` to fail.
 
 ---
 
-## 5. Verify CI's `fast_dev_run` step
+## 6. Verify CI's `fast_dev_run` step
 
 **Status**: added in commit `d18a2e1` to `.github/workflows/ci.yml`,
 never run because no PR has triggered it.
